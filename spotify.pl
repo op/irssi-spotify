@@ -448,12 +448,12 @@ sub spotify_lookup {
 			client_secret => Irssi::settings_get_str('spotify_client_secret')
 		];
 		my $response = $ua->request($request);
-		my $result = from_json($response->decoded_content());
 		my $content_type = $response->header('Content-Type');
 		if (index($content_type, 'application/json') == -1) {
 			print($writer "Unsupported content type: $content_type (" . $response->code . ")");
 			return 1;
 		}
+		my $result = from_json($response->decoded_content(), {utf8 => 1});
 		if (defined $result->{error}) {
 			my $error = $result->{error_description} || $result->{error};
 			print($writer "Authorization failed: $error (" . $response->code . ")");
@@ -472,7 +472,7 @@ sub spotify_lookup {
 		print($writer "Unsupported content type: $content_type (" . $response->code . ")");
 		return 1;
 	}
-	my $result = from_json($response->decoded_content());
+	my $result = from_json($response->decoded_content(), {utf8 => 1});
 	if (defined $result->{error}) {
 		print($writer "Lookup failed: $result->{error}->{message} (" . $response->code . ")");
 		return 1;
