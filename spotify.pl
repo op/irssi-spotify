@@ -1,6 +1,6 @@
 # spotify.pl - lookup spotify resources
 #
-# Copyright (c) 2009 Örjan Persson <o@42mm.org>
+# Copyright (c) 2009-2014 Örjan Persson <o@42mm.org>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,7 +25,7 @@ $VERSION = '0.1';
 	name        => 'spotify',
 	description => 'Lookup spotify uris',
 	license     => 'GPLv2'
-);  
+);
 
 use Irssi;
 
@@ -119,7 +119,7 @@ SPOTIFY AUTO PUBLIC [OPTION...]
     -w, whitelist: treaten list as a whitelist
     -b, blacklist: treaten list as a blacklist
 
-Add a nick or channel to search from when matching 
+Add a nick or channel to search from when matching
 Configure automatic features. The public section is for
 automatic return results in the window the Spotify resource
 was sent in.
@@ -166,7 +166,7 @@ sub cmd_spotify_lookup {
 	# Treat the rest as data argument
 	my $data = join(' ', @argv[$i..$#argv]);
 
-	# Make sure we actually have a window reference and check if we can write	
+	# Make sure we actually have a window reference and check if we can write
 	if ($public) {
 		if (!$window) {
 			Irssi::active_win()->print("Must be run run in a valid window (CHANNEL|QUERY)");
@@ -236,7 +236,7 @@ sub cmd_spotify_auto_public {
 
 sub cmd_spotify_auto_public_add {
 	my ($args, $server, $window) = @_;
-	
+
 	my @argv = split(/ /, $args);
 	my $type = shift(@argv);
 
@@ -288,7 +288,7 @@ sub event_message_topic {
 
 	if ($server->{nick} ne $nick) {
 		event_message($server, $topic, $nick, $address, $channel);
-	}	
+	}
 
 }
 
