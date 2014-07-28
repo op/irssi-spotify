@@ -18,7 +18,7 @@
 
 use strict;
 use vars qw($VERSION %IRSSI);
-$VERSION = '0.1';
+$VERSION = '0.2';
 %IRSSI = (
 	authors     => 'Örjan Persson',
 	contact     => 'o@42mm.org',
@@ -30,10 +30,12 @@ $VERSION = '0.1';
 use Irssi;
 
 use Encode;
-use HTML::Entities;
+use HTTP::Request::Common;
+use HTTP::Request;
+use JSON;
 use LWP::UserAgent;
 use POSIX;
-use XML::DOM;
+use URI;
 
 sub cmd_spotify_help {
 	Irssi::print(<<'EOF', MSGLEVEL_CLIENTCRAP);
@@ -42,9 +44,9 @@ SPOTIFY [-a | auto] [-l | lookup] [...]
     -a, auto: see SPOTIFY AUTO
     -l, lookup: see SPOTIFY LOOKUP
 
-Lookup spotify uris to get information on tracks, albums,
-and artists. You can configure it to do automatic lookup
-when someone sends it in a channel or privatley.
+Lookup spotify uris to get information on tracks, albums, and artists. You can
+configure it to do automatic lookup when someone sends it in a channel or
+privately.
 
 There are several settings which can be configured.
 
@@ -57,11 +59,13 @@ There are several settings which can be configured.
         %%name           name of the album
         %%artist         album artists
         %%year           year the album was released
+        %%popularity     album popularity
         %%territories    territories the album is available in
 
 /SET spotify_artist_format <string>
     Format for artist results. Available variables:
         %%name           name of the artist
+        %%popularity     artist popularity
 
 /SET spotify_track_format <string>
     Format for track results. Available variables:
@@ -312,7 +316,7 @@ sub event_message {
 
 	# Dispatch a lookup for each matching uri
 	my @output_args = ($server->{tag}, $window->{name}, $public ? $target : 0);
-	while ($text =~ m/(http:\/\/open\.spotify\.com\/|spotify:)(track|user|album|artist)[\/:][^\s]+/g) {
+	while ($text =~ m{(https?://(play|open)\.spotify\.com/|spotify:)[^\s<>\[\]()?]+}g) {
 		my @worker_args = ($&, 0);
 		dispatch(\&spotify_lookup, \@worker_args, \@output_args);
 	}
@@ -322,7 +326,6 @@ sub dispatch {
 	my $action = shift;
 	my @writer_args = @{$_[0]};
 	my @reader_args = @{$_[1]};
-
 
 	# Create communication between child and main process
 	my ($reader, $writer);
@@ -398,88 +401,64 @@ sub spotify_lookup {
 	my $writer = shift;
 	my ($uri, $manual) = @{$_[0]};
 
-	# Retrieve text values from xml nodes by a search path
-	#
-	# Imagine that you have this XML:
-	# <elem1><elem2><elem3>text</elem3></elem2></elem1>
-	#
-	# You can easily retrieve the 'text' by setting the search pattern to
-	# elem1/elem2/elem3.
-	sub getTextValue {
-		my $node = shift;
-		my $path = shift;
-		my $recurse = shift || 0;
-
-		# Walk through the path and pop the base
-		my ($name, $subpath) = split(/\//, $path, 2);
-
-		my $text = '';
-		my $i = 0;
-		foreach my $child ($node->getElementsByTagName($name, $recurse)) {
-			if ($i > 0) { $text .= ', '; }
-			if (defined($subpath)) { $text .= getTextValue($child, $subpath, $recurse); }
-			else { $text .= HTML::Entities::decode($child->getFirstChild->toString()); }
-		}
-
-		return $text;
-	}
-
-	# Sanitize uri
 	$uri =~ s/^\s+//g;
-	$uri =~ s/\s+$//g;
+	$uri =~ s/[\s\.]+$//g;
+	my $u = URI->new($uri);
+	my @parts = split /[\/:]/, URI->new($uri)->path;
 
-	# Initialize LWP
-	my $ua = new LWP::UserAgent(agent => "spotify.pl/$VERSION", timeout => 10);
-	$ua->env_proxy();
-
-	# Do the actual lookup
-	my $url = "http://ws.spotify.com/lookup/1/?uri=$uri";
-	my $request = new HTTP::Request(GET => $url);
-	my $response = $ua->request($request);
-
-	if ($response->code / 100 != 2) {
-		print($writer "Failed to retrieve: $uri (error: " . $response->code . ")");
+	my $path;
+	my $auth;
+	if ($parts[0] =~ /^(track|album|artist)$/ && @parts == 2) {
+		$path = "v1/$parts[0]\s/$parts[1]";
+	} else {
+		print($writer "spotify: unsupported URI: $uri");
 		return 1;
 	}
 
-	# Parse XML result
-	my $parser = new XML::DOM::Parser();
-	my $dom = $parser->parse($response->decoded_content());
-	my $root = $dom->getDocumentElement();
+	my $ua = new LWP::UserAgent(
+		agent => "spotify.pl/$VERSION",
+		timeout => 10
+	);
+	$ua->env_proxy();
+
+	my $request = GET 'https://api.spotify.com/' . $path;
+	my $response = $ua->request($request);
+	my $content_type = $response->header('Content-Type');
+	if (index($content_type, 'application/json') == -1) {
+		print($writer "Unsupported content type: $content_type (" . $response->code . ")");
+		return 1;
+	}
+	my $result = from_json($response->decoded_content());
+	if (defined $result->{error}) {
+		print($writer "Lookup failed: $result->{error}->{message} (" . $response->code . ")");
+		return 1;
+	}
 
 	my $message = undef;
 	my %data;
-
-	if ($root->getNodeName() eq "track") {
-		$data{'name'} = getTextValue($root, 'name');
-		$data{'artist'} = getTextValue($root, 'artist/name');
-		$data{'album'} = getTextValue($root, 'album/name');
-
-		# Try to make some perty popularity
-		my $popularity = getTextValue($root, 'popularity');
-		$data{'popularity'} = '';
-		for (my $i = 0; $i < 5; $i++) {
-			if (($i*2/10) <= $popularity) { $data{'popularity'} .= '*'; }
-			else { $data{'popularity'} .= '-'; }
-		}
-
+	if ($result->{type} eq 'track') {
+		$data{'name'} = $result->{name};
+		$data{'artist'} = artists_str($result->{artists});
+		$data{'album'} = $result->{album}->{name};
+		$data{'popularity'} = popularity_str($result->{popularity});
 		$message = Irssi::settings_get_str('spotify_track_format');
 		$message =~ s/%(name|artist|album|popularity)/$data{$1}/ge;
-
-	} elsif ($root->getNodeName() eq "album") {
-		$data{'name'} = getTextValue($root, 'name');
-		$data{'artist'} = getTextValue($root, 'artist/name');
-		$data{'year'} = getTextValue($root, 'released');
-		$data{'territories'} = getTextValue($root, 'availability/territories');
-
+	} elsif ($result->{type} eq 'album') {
+		$data{'name'} = $result->{name};
+		$data{'artist'} = artists_str($result->{artists});
+		$data{'year'} = substr $result->{release_date}, 0, 4;
+		$data{'popularity'} = popularity_str($result->{popularity});
+		$data{'territories'} = join ', ', $result->{available_markets};
 		$message = Irssi::settings_get_str('spotify_album_format');
-		$message =~ s/%(name|artist|year|territories)/$data{$1}/ge;
-
-	} elsif ($root->getNodeName() eq "artist") {
-		$data{'name'} = getTextValue($root, 'name');
-
+		$message =~ s/%(name|artist|year|popularity|territories)/$data{$1}/ge;
+	} elsif ($result->{type} eq 'artist') {
+		$data{'name'} = $result->{name};
+		$data{'popularity'} = popularity_str($result->{popularity});
 		$message = Irssi::settings_get_str('spotify_artist_format');
-		$message =~ s/%name/$data{'name'}/ge;
+		$message =~ s/%(name|popularity)/$data{$1}/ge;
+	} else {
+		print($writer "spotify: unhandled result type: " . $result->{type});
+		return 1;
 	}
 
 	my $charset = Irssi::settings_get_str('term_charset');
@@ -499,6 +478,28 @@ sub spotify_lookup {
 	print($writer $message);
 
 	return 0;
+}
+
+sub artists_str {
+	my $artists = shift;
+	my @names;
+	foreach my $artist(@{$artists}) {
+		push(@names, $artist->{name});
+	}
+	return join ', ', @names;
+}
+
+sub popularity_str {
+	my $popularity = shift;
+	my $str = '';
+	for (my $i = 0; $i < 100; $i += 20) {
+		if ($i <= $popularity) {
+			$str .= '*';
+		} else {
+			$str .= '-';
+		}
+	}
+	return $str;
 }
 
 sub settings_get_array {
@@ -613,8 +614,8 @@ Irssi::settings_add_bool('spotify', 'spotify_automatic_lookup_public_blacklist',
 
 Irssi::settings_add_str('spotify', 'spotify_header_format',         'Lookup result for %_%uri%_:');
 Irssi::settings_add_str('spotify', 'spotify_track_format',          '%_%name%_ by %_%artist%_ (from %album) [%_%popularity%_]');
-Irssi::settings_add_str('spotify', 'spotify_album_format',          '%_%name%_ by %_%artist%_ (%year)');
-Irssi::settings_add_str('spotify', 'spotify_artist_format',         '%_%name%_');
+Irssi::settings_add_str('spotify', 'spotify_album_format',          '%_%name%_ by %_%artist%_ (%year) [%_%popularity%_]');
+Irssi::settings_add_str('spotify', 'spotify_artist_format',         '%_%name%_ [%_%popularity%_]');
 
 Irssi::settings_add_str('spotify', 'spotify_automatic_lookup_public_channels', '');
 Irssi::settings_add_str('spotify', 'spotify_automatic_lookup_public_nicks', '');
