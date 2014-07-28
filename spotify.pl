@@ -18,13 +18,14 @@
 
 use strict;
 use vars qw($VERSION %IRSSI);
-$VERSION = '0.3';
+$VERSION = '1.0';
 %IRSSI = (
 	authors     => 'Örjan Persson',
 	contact     => 'o@42mm.org',
 	name        => 'spotify',
 	description => 'Lookup spotify uris',
-	license     => 'GPLv2'
+	license     => 'GPLv2',
+	url         => 'https://github.com/op/irssi-spotify'
 );
 
 use Irssi;
