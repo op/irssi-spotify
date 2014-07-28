@@ -450,7 +450,8 @@ sub spotify_lookup {
 		my $response = $ua->request($request);
 		my $content_type = $response->header('Content-Type');
 		if (index($content_type, 'application/json') == -1) {
-			print($writer "Unsupported content type: $content_type (" . $response->code . ")");
+			my $body = substr $response->decoded_content(), 0, 128;
+			print($writer "Unsupported content type: $content_type (" . $response->code . "): $body");
 			return 1;
 		}
 		my $result = from_json($response->decoded_content(), {utf8 => 1});
@@ -469,7 +470,8 @@ sub spotify_lookup {
 	my $response = $ua->request($request);
 	my $content_type = $response->header('Content-Type');
 	if (index($content_type, 'application/json') == -1) {
-		print($writer "Unsupported content type: $content_type (" . $response->code . ")");
+		my $body = substr $response->decoded_content(), 0, 128;
+		print($writer "Unsupported content type: $content_type (" . $response->code . "): $body");
 		return 1;
 	}
 	my $result = from_json($response->decoded_content(), {utf8 => 1});
