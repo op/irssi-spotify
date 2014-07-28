@@ -18,7 +18,7 @@
 
 use strict;
 use vars qw($VERSION %IRSSI);
-$VERSION = '0.2';
+$VERSION = '0.3';
 %IRSSI = (
 	authors     => 'Örjan Persson',
 	contact     => 'o@42mm.org',
@@ -44,11 +44,17 @@ SPOTIFY [-a | auto] [-l | lookup] [...]
     -a, auto: see SPOTIFY AUTO
     -l, lookup: see SPOTIFY LOOKUP
 
-Lookup spotify uris to get information on tracks, albums, and artists. You can
-configure it to do automatic lookup when someone sends it in a channel or
-privately.
+Lookup spotify uris to get information on tracks, albums, artists and
+playlists. You can configure it to do automatic lookup when someone sends it in
+a channel or privately.
 
-There are several settings which can be configured.
+Playlist requests require authentication. Get credentials from
+https://developer.spotify.com.
+
+/SET spotify_client_id <string>
+/SET spotify_client_secret <string>
+
+Output format is customizable.
 
 /SET spotify_header_format <string>
     Header message above lookup result. Available variables:
@@ -73,6 +79,11 @@ There are several settings which can be configured.
         %%album          name of the album
         %%artist         track artists
         %%popularity     track popularity
+
+/SET spotify_playlist_format <string>
+    Format for playlist results. Available variables:
+        %%name           name of the playlist
+        %%owner          name of the owner
 
 See /SPOTIFY <section> help for more information.
 
@@ -410,6 +421,11 @@ sub spotify_lookup {
 	my $auth;
 	if ($parts[0] =~ /^(track|album|artist)$/ && @parts == 2) {
 		$path = "v1/$parts[0]\s/$parts[1]";
+	} elsif ($parts[0] eq 'user' && @parts == 2) {
+		$path = "v1/users/$parts[1]";
+	} elsif ($parts[0] eq 'user' && @parts == 4 && $parts[2] == 'playlist') {
+		$path = "v1/users/$parts[1]/playlists/$parts[3]";
+		$auth = 1;
 	} else {
 		print($writer "spotify: unsupported URI: $uri");
 		return 1;
@@ -421,7 +437,35 @@ sub spotify_lookup {
 	);
 	$ua->env_proxy();
 
+	# Fetch access token when needed. The token could be cached and re-used where
+	# possible. Since we're in a forked process, it's not trivial and probably
+	# not worth the effort.
+	my $token;
+	if ($auth) {
+		my $request = POST 'https://accounts.spotify.com/api/token', [
+			grant_type => 'client_credentials',
+			client_id => Irssi::settings_get_str('spotify_client_id'),
+			client_secret => Irssi::settings_get_str('spotify_client_secret')
+		];
+		my $response = $ua->request($request);
+		my $result = from_json($response->decoded_content());
+		my $content_type = $response->header('Content-Type');
+		if (index($content_type, 'application/json') == -1) {
+			print($writer "Unsupported content type: $content_type (" . $response->code . ")");
+			return 1;
+		}
+		if (defined $result->{error}) {
+			my $error = $result->{error_description} || $result->{error};
+			print($writer "Authorization failed: $error (" . $response->code . ")");
+			return 1;
+		}
+		$token = $result->{access_token};
+	}
+
 	my $request = GET 'https://api.spotify.com/' . $path;
+	if ($token) {
+		$request->header('Authorization' => 'Bearer ' . $token);
+	}
 	my $response = $ua->request($request);
 	my $content_type = $response->header('Content-Type');
 	if (index($content_type, 'application/json') == -1) {
@@ -456,6 +500,15 @@ sub spotify_lookup {
 		$data{'popularity'} = popularity_str($result->{popularity});
 		$message = Irssi::settings_get_str('spotify_artist_format');
 		$message =~ s/%(name|popularity)/$data{$1}/ge;
+	} elsif ($result->{type} eq 'user') {
+		$data{'user'} = $result->{id};
+		$message = Irssi::settings_get_str('spotify_user_format');
+		$message =~ s/%(user)/$data{$1}/ge;
+	} elsif ($result->{type} eq 'playlist') {
+		$data{'name'} = $result->{name};
+		$data{'owner'} = $result->{owner}->{id};
+		$message = Irssi::settings_get_str('spotify_playlist_format');
+		$message =~ s/%(name|owner)/$data{$1}/ge;
 	} else {
 		print($writer "spotify: unhandled result type: " . $result->{type});
 		return 1;
@@ -612,10 +665,15 @@ Irssi::settings_add_bool('spotify', 'spotify_automatic_lookup', 1);
 Irssi::settings_add_bool('spotify', 'spotify_automatic_lookup_public', 0);
 Irssi::settings_add_bool('spotify', 'spotify_automatic_lookup_public_blacklist', 0);
 
+Irssi::settings_add_str('spotify', 'spotify_client_id', '');
+Irssi::settings_add_str('spotify', 'spotify_client_secret', '');
+
 Irssi::settings_add_str('spotify', 'spotify_header_format',         'Lookup result for %_%uri%_:');
 Irssi::settings_add_str('spotify', 'spotify_track_format',          '%_%name%_ by %_%artist%_ (from %album) [%_%popularity%_]');
 Irssi::settings_add_str('spotify', 'spotify_album_format',          '%_%name%_ by %_%artist%_ (%year) [%_%popularity%_]');
 Irssi::settings_add_str('spotify', 'spotify_artist_format',         '%_%name%_ [%_%popularity%_]');
+Irssi::settings_add_str('spotify', 'spotify_playlist_format',       '%_%name%_ by %_%owner%_');
+Irssi::settings_add_str('spotify', 'spotify_user_format',           'Username: %_%user%_');
 
 Irssi::settings_add_str('spotify', 'spotify_automatic_lookup_public_channels', '');
 Irssi::settings_add_str('spotify', 'spotify_automatic_lookup_public_nicks', '');
